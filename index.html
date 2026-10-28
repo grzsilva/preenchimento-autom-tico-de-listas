@@ -73,7 +73,7 @@ td.c{cursor:pointer;user-select:none;font-weight:700}td.P{color:var(--p)}td.A{co
 <div class="w"><canvas id="pv" style="width:100%;min-width:760px;display:block;background:#fff"></canvas></div>
 
 <h2>5. PDF</h2>
-<div class="box row"><label>O que baixar<select id="dl"><option value="one">Somente a lista em prévia (turma e mês)</option><option value="month">Mês da prévia: todas as turmas marcadas em 1 arquivo</option><option value="period">Período: 1 arquivo por mês, com as turmas marcadas</option></select></label></div>
+<div class="box row"><label>O que baixar<select id="dl"><option value="one">Somente a lista em prévia (turma e mês)</option><option value="month">Mês da prévia: todas as turmas marcadas em 1 arquivo</option><option value="period">Período: 1 arquivo por mês, com as turmas marcadas</option><option value="classmonth">Período: 1 arquivo por turma por mês</option></select></label></div>
 <button id="pdf">Baixar PDF</button>
 <div id="msg" class="mut" style="margin-top:6px"></div>
 </main>
@@ -93,19 +93,52 @@ async function readX(f,key){
   return rows.slice(h+1).filter(r=>r[0]!=='').map(r=>Object.fromEntries(rows[h].map((k,i)=>[norm(k),r[i]])));
 }
 $('#fb').onchange=async e=>{try{B=await readX(e.target.files[0],'Nome Completo');$('#st').textContent='Beneficiários lidos: '+B.length;build()}catch(x){$('#st').textContent='Erro: '+x.message}};
-$('#fp').onchange=async e=>{try{PR=(await readX(e.target.files[0],'Matrícula')).map(r=>({nome:String(r.nome).trim(),atu:String(r.atuacao),nucs:String(r.nucleo).split(',').map(norm)}));$('#st').textContent='Profissionais lidos: '+PR.length;build()}catch(x){$('#st').textContent='Erro: '+x.message}};
+$('#fp').onchange=async e=>{try{
+  const f=e.target.files[0];if(!f)return;
+  const wb=XLSX.read(await f.arrayBuffer());
+  const aliases={nome:['nome','nomecompleto','nomedoprofissional','profissional','colaborador','nomedocolaborador'],atu:['atuacao','funcao','cargo','papel','atividade','perfil','funcaodoprofissional'],nuc:['nucleo','nucleos','unidadenucleo','local','unidade','nucleodeatuacao']};
+  let found=[];
+  for(const sheet of wb.SheetNames){
+    const rows=XLSX.utils.sheet_to_json(wb.Sheets[sheet],{header:1,defval:''});
+    const h=rows.findIndex(r=>r.some(c=>aliases.nome.includes(norm(c)))&&r.some(c=>aliases.atu.includes(norm(c))));
+    if(h<0)continue;
+    const headers=rows[h].map(norm);
+    const get=(r,keys)=>{const i=headers.findIndex(k=>keys.includes(k));return i<0?'':r[i]};
+    found.push(...rows.slice(h+1).map(r=>{
+      const nome=String(get(r,aliases.nome)||'').trim();
+      const atu=String(get(r,aliases.atu)||'').trim();
+      const raw=String(get(r,aliases.nuc)||'').trim();
+      return {nome,atu,nucs:raw.split(/[,;|\n]+/).map(norm).filter(Boolean)};
+    }).filter(q=>q.nome&&q.atu));
+  }
+  if(!found.length)throw new Error('Não encontrei profissionais. Confira as colunas Nome, Atuação/Função e Núcleo.');
+  PR=found;
+  $('#st').textContent='Profissionais lidos: '+PR.length+' · vínculos preenchidos automaticamente quando identificados.';
+  build();
+}catch(x){PR=null;$('#st').textContent='Erro ao ler profissionais: '+x.message;build();}};
 
 function parseTurma(tu){
-  const inner=(tu.match(/\((.*)\)/)||[])[1]||'',segs=[],days=new Set();
-  for(const m of inner.matchAll(/([A-Za-zÀ-ú ,]+?)\s*(\d{1,2}:\d{2})\s*às\s*(\d{1,2}:\d{2})/g)){
-    const ds=(norm(m[1]).match(/seg|ter|qua|qui|sex|sab|dom/g)||[]).map(d=>DK.indexOf(d));
-    ds.forEach(d=>days.add(d));segs.push({ds,h:m[2]+' às '+m[3]});
+  const inner=(String(tu).match(/\((.*)\)/)||[])[1]||String(tu);
+  const dayRe=/(segunda(?:-feira)?|ter[cç]a(?:-feira)?|quarta(?:-feira)?|quinta(?:-feira)?|sexta(?:-feira)?|s[aá]bado|domingo|seg|ter|qua|qui|sex|s[aá]b|dom)/gi;
+  const di={segunda:1,terca:2,quarta:3,quinta:4,sexta:5,sabado:6,domingo:0,seg:1,ter:2,qua:3,qui:4,sex:5,sab:6,dom:0};
+  const dayList=[...new Set([...inner.matchAll(dayRe)].map(x=>di[norm(x[0])]).filter(x=>x!==undefined))];
+  // Captura horas individualmente, sem depender da grafia do separador (às, ás, a, hífen ou /).
+  // Os horários são associados aos dias na ordem em que aparecem na célula Turma.
+  const clockRe=/(?:^|[^\d])([01]?\d|2[0-3])\s*[:h]\s*([0-5]\d)(?!\d)/g;
+  const clocks=[...inner.matchAll(clockRe)].map(v=>({h:Number(v[1]),m:Number(v[2]),pos:v.index}));
+  const fmt=(h,m)=>String(h).padStart(2,'0')+':'+String(m).padStart(2,'0');
+  const horarios=[];
+  for(let i=0;i+1<clocks.length;i+=2){
+    const ini=clocks[i],fim=clocks[i+1];
+    const dia=dayList[Math.floor(i/2)];
+    const ds=clocks.length===2?dayList.slice():(dia===undefined?[]:[dia]);
+    horarios.push({ds,h:fmt(ini.h,ini.m)+' às '+fmt(fim.h,fim.m)});
   }
-  const u=[...new Set(segs.map(s=>s.h))];
-  const hor=u.length<=1?(u[0]||''):segs.map(s=>s.ds.map(d=>DN[d].slice(0,3)).join('/')+' '+s.h).join(' | ');
-  const nm=[...days].sort().map(d=>DN[d]);
-  const per=String(nm.length).padStart(2,'0')+' vez'+(nm.length>1?'es':'')+' na semana '+(nm.length>1?nm.slice(0,-1).join(', ')+' e '+nm.slice(-1):nm[0]||'');
-  return{days,hor,per};
+  const days=new Set(dayList);
+  const nomes=dayList.slice().sort((a,b)=>a-b).map(d=>DN[d]);
+  const per=String(nomes.length).padStart(2,'0')+' vez'+(nomes.length>1?'es':'')+' na semana '+(nomes.length>1?nomes.slice(0,-1).join(', ')+' e '+nomes.slice(-1):nomes[0]||'');
+  const hor=horarios.map(s=>(s.ds.length?s.ds.map(d=>DN[d].slice(0,3)).join('/')+' ':'')+s.h).join(' | ');
+  return {days,hor,per,horarios};
 }
 function build(){
   if(!B)return;
@@ -117,8 +150,17 @@ function build(){
     const p=parseTurma(t.tu);Object.assign(t,p);
     t.label=t.tu.split('(')[0].trim();t.num=t.label.replace(/\D/g,'')*1||t.label;
     t.alunos.sort((a,b)=>a.localeCompare(b,'pt-BR'));t.head=t.nuc;
-    const pick=(rx,mod)=>{const i=(PR||[]).findIndex(q=>rx.test(norm(q.atu))&&q.nucs.includes(norm(t.nuc))&&(!mod||norm(q.atu).includes(norm(t.ativ))));return i<0?'':i};
-    t.coord=pick(/coordenador/);t.prof=pick(/professor|instrutor/,1);t.aux=pick(/monitor/,1);
+    const nucMatch=q=>{const tn=norm(t.nuc);return q.nucs.some(n=>n===tn||(n.length>=5&&tn.length>=5&&(n.includes(tn)||tn.includes(n))))};
+    const pick=(rx,mod)=>{
+      const candidates=(PR||[]).map((q,i)=>({q,i})).filter(x=>rx.test(norm(x.q.atu)));
+      const sameNuc=candidates.filter(x=>nucMatch(x.q));
+      const specific=sameNuc.filter(x=>norm(x.q.atu).includes(norm(t.ativ)));
+      const chosen=(mod&&specific.length===1?specific[0]:null)||(sameNuc.length===1?sameNuc[0]:null)||(!mod&&sameNuc.length?sameNuc[0]:null);
+      return chosen?chosen.i:'';
+    };
+    t.coord=pick(/coordenador|coordenacao|coordena/,false);
+    t.prof=pick(/professor|instrutor|educador|oficineiro/,true);
+    t.aux=pick(/auxiliar|assistente|monitor/,true);
     return t}).sort((a,b)=>(a.nuc+a.ativ).localeCompare(b.nuc+b.ativ,'pt-BR')||String(a.num).localeCompare(String(b.num),'pt-BR',{numeric:true}));
   M={};modOpts();draw();
 }
@@ -127,7 +169,7 @@ function opts(t,sel){
   return '<option value="">— nenhum —</option>'+L.map(x=>`<option value="${x.i}"${x.i===sel?' selected':''}>${esc(x.q.nome)} (${esc(x.q.atu.trim())})</option>`).join('');
 }
 function draw(){
-  $('#turmas').innerHTML=T.map((t,i)=>`<div class="box"><label class="t"><input type="checkbox" data-i="${i}" data-f="on" ${t.on?'checked':''}> ${esc(t.nuc)} · ${esc(t.ativ)} · ${esc(t.tu)} <span class="mut">(${t.alunos.length} benef.)</span></label>
+  $('#turmas').innerHTML=T.map((t,i)=>`<div class="box"><label class="t"><input type="checkbox" data-i="${i}" data-f="on" ${t.on?'checked':''}> ${esc(t.nuc)} · ${esc(t.ativ)} · ${esc(t.tu)} <span class="mut">Horários: ${esc(t.hor||"não identificados")} · (${t.alunos.length} benef.)</span></label>
   <div class="sel"><label>Núcleo no cabeçalho<input data-i="${i}" data-f="head" value="${esc(t.head)}"></label>
   <label>Coordenador<select data-i="${i}" data-f="coord">${opts(t,t.coord)}</select></label>
   <label>Professor<select data-i="${i}" data-f="prof">${opts(t,t.prof)}</select></label>
@@ -210,7 +252,11 @@ function page(B,t,y,m,x,o){
   [['Núcleo:',108.4],['Coordenador:',125.2],['Professor:',136.5],['Auxiliar:',146.0]].forEach(a=>T_(a[0],217.4,a[1],6.5,G,1,'right'));
   [[t.head,107.1],[nm('coord'),121.8],[nm('prof'),135.5],[nm('aux'),145.7]].forEach(a=>T_(a[0],306.2,a[1],6.5,G,0));
   [['Turma: ',106.5],['Periodicidade',120.8],['Modalidade: ',134.8],['Horário',145.1]].forEach(a=>T_(a[0],414.1,a[1],6.5,G,1));
-  [[t.num,106.5],[t.per,120.8],[t.ativ,134.8],[t.hor,145.1]].forEach(a=>T_(a[0],487.8,a[1],6.5,G,0));
+  [[t.num,106.5],[t.per,120.8],[t.ativ,134.8]].forEach(a=>T_(a[0],487.8,a[1],6.5,G,0));
+  // Mostra as duas faixas lado a lado, sem incluir dias no campo Horário.
+  const hs=(t.horarios||[]).map(s=>s.h.replace(' às ','–'));
+  const horaTexto=hs.length?hs.join(' / '):'Horário não identificado';
+  T_(horaTexto,487.8,145.1,hs.length>1?5.0:6.5,G,0);
   T_('Fim de Semana',754.7,135.5,7.2,N,0);T_(F,719.0,145.9,7.2,RD,0);T_('Ausente',754.8,145.9,7.2,N,0);T_('P',719.0,155.4,7.2,N,0);T_('Presente',754.8,155.4,7.2,N,0);
   [['Ausente ('+F+')',650.8,'d12929'],['Presente (P)',670.3,N],['% Presença',689.9,'ffffff']].forEach(a=>T_(a[0],a[1],121.4,6.5,a[2],1,'center',1));
   T_('N°',68.5,155.1,6.5,'ffffff',1);T_('Beneficiado',147.5,155.1,6.5,'ffffff',1);
@@ -287,7 +333,11 @@ $('#pdf').onclick=async()=>{
     if(!sel.length){$('#msg').textContent='Marque ao menos uma turma.';return}
     const list=mode==='month'?(pm?[pm.split('-').map(Number)]:[]):ms;
     if(!list.length){$('#msg').textContent='Defina o mês ou o período.';return}
-    list.forEach(([y,m])=>jobs.push([`listas_${mn}_${MES[m]}-${y}`,sel.map(t=>[t,y,m])]));
+    if(mode==='classmonth'){
+      list.forEach(([y,m])=>sel.forEach(t=>jobs.push([`lista_${slug(t.nuc)}_${slug(t.ativ)}_${slug(t.label)}_${MES[m]}-${y}`,[[t,y,m]]])));
+    }else{
+      list.forEach(([y,m])=>jobs.push([`listas_${mn}_${MES[m]}-${y}`,sel.map(t=>[t,y,m])]));
+    }
   }
   try{
     await FP;let i=0;
